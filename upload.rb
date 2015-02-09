@@ -30,7 +30,7 @@ def create(uri, hash)
   if response.code != "200"
     puts "Error uploading " + hash.to_s + " to " + uri.to_s + " response was " + response.code + " body was " + response.body
   end
-  sleep(1.0/10.0)
+  sleep(1.0/1000.0)
   response
 end
 
@@ -39,7 +39,7 @@ def find(uri)
   res = Net::HTTP.new(uri.hostname, uri.port).start { |http|
     http.request(req)
   }
-  sleep(1.0/10.0)
+  sleep(1.0/1000.0)
   res
 end
 
@@ -106,7 +106,7 @@ OptionParser.new do |opts|
   end
 end.parse!
 
-file = File.read('data/ou-0.json')
+file = File.read('data/ou-1500.json')
 data = JSON.parse(file)
 
 puts options
