@@ -1,3 +1,4 @@
+require 'fileutils'
 require 'json'
 require 'net/http'
 require 'optparse'
@@ -24,6 +25,8 @@ TIER_MONTH_URL      = API_URL + "/tiermonths"
 TIER_RATING_URL     = API_URL + "/tierratings"
 YEAR_URL            = API_URL + "/years"
 
+CURRENT_GENERATION = 6
+
 def replace_whitespace(name)
   name.tr(" ", "+")
 end
@@ -37,11 +40,21 @@ def create(uri, hash)
   if response.code != "200"
     puts "Error uploading " + hash.to_s + " to " + uri.to_s + " response was " + response.code + " body was " + response.body
   end
-  sleep(1.0/1000.0)
+  sleep(1.0/100.0)
   response
 end
 
 def find(uri)
+  req = Net::HTTP::Get.new(uri)
+  res = Net::HTTP.new(uri.hostname, uri.port).start { |http|
+    http.request(req)
+  }
+  sleep(1.0/1000.0)
+  res
+end
+
+def get(url)
+  uri = URI(url)
   req = Net::HTTP::Get.new(uri)
   res = Net::HTTP.new(uri.hostname, uri.port).start { |http|
     http.request(req)
@@ -96,13 +109,73 @@ def parse_nature(spread)
   /(\w+):.*/.match(spread)[1]
 end
 
+def upload_file(year, month, generation, tier, tier_rating, data)
+  FileUtils.mkdir_p("logs/#{year}/#{month}/#{generation}/#{tier}/#{tier_rating}")
+
+  generation_id  = create_if_non_existant_return_id(GENERATION_URL, {number: generation})
+  year_id        = create_if_non_existant_return_id(YEAR_URL, {number: year})
+  month_id       = create_if_non_existant_return_id(MONTH_URL, {number: month, year_id: year_id})
+  tier_id        = create_if_non_existant_return_id(TIER_URL, {name: tier, generation_id: generation_id})
+  tier_month_id  = create_if_non_existant_return_id(TIER_MONTH_URL, {month_id: month_id, tier_id: tier_id})
+  tier_rating_id = create_if_non_existant_return_id(TIER_RATING_URL, {rating: tier_rating, tier_month_id: tier_month_id, no_of_battles: data["info"]["number of battles"]})
+
+  number_of_pokemon = data["data"].keys.length
+  counter = 0
+
+  data["data"].keys.each do |pokemon|
+
+    counter += 1
+    File.write("logs/#{year}/#{month}/#{generation}/#{tier}/#{tier_rating}/pokemon.log", "Uploading #{pokemon} - #{counter}/#{number_of_pokemon}")
+
+    pokemon_id = create_if_non_existant_return_id(POKEMON_URL, {name: pokemon})
+    stat_record_id = create_return_id(STAT_RECORD_URL, remove_whitespace_from_hash_values({pokemon_id: pokemon_id, tier_rating_id: tier_rating_id, raw_usage: data["data"][pokemon]["Raw count"]}))
+
+    # Upload moves
+    data["data"][pokemon]["Moves"].each do |move, value|
+      move_id = create_if_non_existant_return_id(MOVE_URL, {name: move})
+      move_record_id = create_return_id(MOVE_RECORD_URL, remove_whitespace_from_hash_values({number: value, stat_record_id: stat_record_id, move_id: move_id}))
+    end
+
+    # Upload abilities
+    data["data"][pokemon]["Abilities"].each do |ability, value|
+      ability_id = create_if_non_existant_return_id(ABILITY_URL, {name: ability})
+      ability_record_id = create_return_id(ABILITY_RECORD_URL, remove_whitespace_from_hash_values({number: value, stat_record_id: stat_record_id, ability_id: ability_id}))
+    end
+
+    # Upload items
+    data["data"][pokemon]["Items"].each do |item, value|
+      item_id = create_if_non_existant_return_id(ITEM_URL, {name: item})
+      item_record_id = create_return_id(ITEM_RECORD_URL, remove_whitespace_from_hash_values({number: value, stat_record_id: stat_record_id, item_id: item_id}))
+    end
+
+    # Upload spreads
+    data["data"][pokemon]["Spreads"].each do |spread, value|
+      ev_spread = parse_ev_spread(spread)
+      nature    = parse_nature(spread)
+
+      ev_spread_id = create_if_non_existant_return_id(EV_SPREAD_URL, ev_spread)
+      nature_id = create_if_non_existant_return_id(NATURE_URL, {name: nature})
+
+      spread_record_id = create_return_id(SPREAD_RECORD_URL, remove_whitespace_from_hash_values({number: value, ev_spread_id: ev_spread_id, nature_id: nature_id, stat_record_id: stat_record_id}))
+    end
+
+    # Upload checks and counters
+    # data["data"][pokemon]["Checks and Counters"].each do |check, value|
+    #   check_pokemon_id = create_if_non_existant_return_id(POKEMON_URL, {name: check})
+    #   check_record_id = create_return_id(CHECK_RECORD_URL, remove_whitespace_from_hash_values({number: value, pokemon_id: check_pokemon_id, stat_record_id: stat_record_id}))
+    # end
+
+    data["data"][pokemon]["Teammates"].each do |teammate, value|
+      teammate_pokemon_id = create_if_non_existant_return_id(POKEMON_URL, {name: teammate})
+      teammate_record_id = create_return_id(TEAMMATE_RECORD_URL, remove_whitespace_from_hash_values({number: value, pokemon_id: teammate_pokemon_id, stat_record_id: stat_record_id}))
+    end
+
+  end
+end
+
 options = {}
 OptionParser.new do |opts|
-  opts.banner = "Usage: ruby upload.rb --generation [generation] --year [year] --month [month] --tier [tier] --rating-cap [rating-cap]"
-
-  opts.on("--generation GENERATION") do |generation|
-    options[:generation] = generation
-  end
+  opts.banner = "Usage: ruby upload.rb --year [year] --month [month]"
 
   opts.on("--year YEAR") do |year|
     options[:year] = year
@@ -111,77 +184,31 @@ OptionParser.new do |opts|
   opts.on("--month MONTH") do |month|
     options[:month] = month
   end
-
-  opts.on("--tier TIER") do |tier|
-    options[:tier] = tier
-  end
-
-  opts.on("--rating-cap RATINGCAP") do |rating_cap|
-    options[:rating_cap] = rating_cap
-  end
 end.parse!
 
-file = File.read('data/gen1oubeta-1760.json')
-data = JSON.parse(file)
+year = options[:year]
+month = options[:month]
 
-puts options
+smogon_url = "http://www.smogon.com/stats/#{year}-#{month}/chaos/"
 
-generation_id  = create_if_non_existant_return_id(GENERATION_URL, {number: options[:generation]})
-year_id        = create_if_non_existant_return_id(YEAR_URL, {number: options[:year]})
-month_id       = create_if_non_existant_return_id(MONTH_URL, {number: options[:month], year_id: year_id})
-tier_id        = create_if_non_existant_return_id(TIER_URL, {name: options[:tier], generation_id: generation_id})
-tier_month_id  = create_if_non_existant_return_id(TIER_MONTH_URL, {month_id: month_id, tier_id: tier_id})
-tier_rating_id = create_if_non_existant_return_id(TIER_RATING_URL, {rating: options[:rating_cap], tier_month_id: tier_month_id, no_of_battles: data["info"]["number of battles"]})
+directory = "logs/#{year}/#{month}"
+FileUtils.mkdir_p(directory)
 
-number_of_pokemon = data["data"].keys.length
-counter = 0
+chaos_files = get(smogon_url).body.scan(/<a.*>(.*.json)<\/a>/)
 
-data["data"].keys.each do |pokemon|
+counter = 1
+total_files = chaos_files.size
 
+chaos_files.each do |filename|
+  match = filename[0].scan(/(gen\d)?(.*)-(\d+)/)
+
+  generation = generation ? match[0][0].scan(/(\d)/)[0][0] : CURRENT_GENERATION
+  tier = match[0][1]
+  rating = match[0][2]
+
+  data = JSON.parse(get("#{smogon_url}/#{filename[0]}").body)
+
+  File.write("#{directory}/files.log", "Uploading #{filename[0]} - #{counter}/#{total_files}\n")
+  upload_file(year, month, generation, tier, rating, data)
   counter += 1
-  puts counter.to_s + "/" + number_of_pokemon.to_s
-
-  pokemon_id = create_if_non_existant_return_id(POKEMON_URL, {name: pokemon})
-  stat_record_id = create_return_id(STAT_RECORD_URL, remove_whitespace_from_hash_values({pokemon_id: pokemon_id, tier_rating_id: tier_rating_id, raw_usage: data["data"][pokemon]["Raw count"]}))
-
-  # Upload moves
-  data["data"][pokemon]["Moves"].each do |move, value|
-    move_id = create_if_non_existant_return_id(MOVE_URL, {name: move})
-    move_record_id = create_return_id(MOVE_RECORD_URL, remove_whitespace_from_hash_values({number: value, stat_record_id: stat_record_id, move_id: move_id}))
-  end
-
-  # Upload abilities
-  data["data"][pokemon]["Abilities"].each do |ability, value|
-    ability_id = create_if_non_existant_return_id(ABILITY_URL, {name: ability})
-    ability_record_id = create_return_id(ABILITY_RECORD_URL, remove_whitespace_from_hash_values({number: value, stat_record_id: stat_record_id, ability_id: ability_id}))
-  end
-
-  # Upload items
-  data["data"][pokemon]["Items"].each do |item, value|
-    item_id = create_if_non_existant_return_id(ITEM_URL, {name: item})
-    item_record_id = create_return_id(ITEM_RECORD_URL, remove_whitespace_from_hash_values({number: value, stat_record_id: stat_record_id, item_id: item_id}))
-  end
-
-  # Upload spreads
-  data["data"][pokemon]["Spreads"].each do |spread, value|
-    ev_spread = parse_ev_spread(spread)
-    nature    = parse_nature(spread)
-
-    ev_spread_id = create_if_non_existant_return_id(EV_SPREAD_URL, ev_spread)
-    nature_id = create_if_non_existant_return_id(NATURE_URL, {name: nature})
-
-    spread_record_id = create_return_id(SPREAD_RECORD_URL, remove_whitespace_from_hash_values({number: value, ev_spread_id: ev_spread_id, nature_id: nature_id, stat_record_id: stat_record_id}))
-  end
-
-  # Upload checks and counters
-  # data["data"][pokemon]["Checks and Counters"].each do |check, value|
-  #   check_pokemon_id = create_if_non_existant_return_id(POKEMON_URL, {name: check})
-  #   check_record_id = create_return_id(CHECK_RECORD_URL, remove_whitespace_from_hash_values({number: value, pokemon_id: check_pokemon_id, stat_record_id: stat_record_id}))
-  # end
-
-  data["data"][pokemon]["Teammates"].each do |teammate, value|
-    teammate_pokemon_id = create_if_non_existant_return_id(POKEMON_URL, {name: teammate})
-    teammate_record_id = create_return_id(TEAMMATE_RECORD_URL, remove_whitespace_from_hash_values({number: value, pokemon_id: teammate_pokemon_id, stat_record_id: stat_record_id}))
-  end
-
 end
