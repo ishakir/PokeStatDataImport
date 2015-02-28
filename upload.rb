@@ -229,6 +229,11 @@ chaos_files.each do |filename|
   data = JSON.parse(get("#{smogon_url}/#{filename[0]}").body)
 
   append("#{directory}/files.log", "Uploading #{filename[0]} - #{counter}/#{total_files}\n")
+  unless year && month && generation && tier && rating
+    puts "ERROR couldn't find data for this file!!"
+    puts filename
+    next
+  end
   upload_file(year, month, generation, tier, rating, data)
   counter += 1
 end
