@@ -31,6 +31,10 @@ def replace_whitespace(name)
   name.tr(" ", "+")
 end
 
+def stringify(name)
+  name.to_s
+end
+
 def create(uri, hash)
   req = Net::HTTP::Post.new(uri, initheader = {'Content-Type' => 'application/json'})
   req.body = hash.to_json
@@ -79,15 +83,18 @@ def remove_whitespace_from_hash_values(hash)
   Hash[hash.map { |key, value| [key, replace_whitespace(value.to_s)] }]
 end
 
+def stringify_hash_values(hash)
+  Hash[hash.map { |key, value| [key, stringify(value.to_s)]}]
+end
+
 def create_if_non_existant_return_id(uri, value_hash)
-  whitespace_clean_value_hash = remove_whitespace_from_hash_values(value_hash)
-  find_uri = form_uri_from_hash(uri, whitespace_clean_value_hash)
+  find_uri = form_uri_from_hash(uri, remove_whitespace_from_hash_values(value_hash))
   find_response = find(find_uri)
   find_response_body = JSON.parse(find_response.body)
   if find_response_body["data"].length == 1
     find_response_body["data"][0]["id"]
   elsif find_response_body["data"].length == 0
-    create_return_id(URI(uri), whitespace_clean_value_hash)
+    create_return_id(URI(uri), stringify_hash_values(value_hash))
   else
     puts "Error found more than one value for URI " + find_uri 
   end
@@ -230,7 +237,7 @@ chaos_files.each do |filename|
 
   append("#{directory}/files.log", "Uploading #{filename[0]} - #{counter}/#{total_files}\n")
   unless year && month && generation && tier && rating
-    puts "ERROR couldn't find data for this file!!"
+    puts "ERROR: Couldn't find data for this file!!"
     puts filename
     next
   end
