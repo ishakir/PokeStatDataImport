@@ -109,8 +109,21 @@ def parse_nature(spread)
   /(\w+):.*/.match(spread)[1]
 end
 
+def append(filename, data)
+  buffer = File.exists?(filename) ? File.size(filename) : 0
+  File.write(filename, data.to_s, buffer, mode: 'a')
+end
+
 def upload_file(year, month, generation, tier, tier_rating, data)
-  FileUtils.mkdir_p("logs/#{year}/#{month}/#{generation}/#{tier}/#{tier_rating}")
+  logs_directory = "logs/#{year}/#{month}/#{generation}/#{tier}/#{tier_rating}"
+  FileUtils.mkdir_p(logs_directory)
+
+  stat_record_file = "#{logs_directory}/stat_records"
+  move_record_file = "#{logs_directory}/move_records"
+  ability_record_file = "#{logs_directory}/ability_records"
+  item_record_file = "#{logs_directory}/item_records"
+  spread_record_file = "#{logs_directory}/spread_records"
+  teammate_record_file = "#{logs_directory}/teammate_records"
 
   generation_id  = create_if_non_existant_return_id(GENERATION_URL, {number: generation})
   year_id        = create_if_non_existant_return_id(YEAR_URL, {number: year})
@@ -125,27 +138,31 @@ def upload_file(year, month, generation, tier, tier_rating, data)
   data["data"].keys.each do |pokemon|
 
     counter += 1
-    File.write("logs/#{year}/#{month}/#{generation}/#{tier}/#{tier_rating}/pokemon.log", "Uploading #{pokemon} - #{counter}/#{number_of_pokemon}")
+    append("#{logs_directory}/pokemon.log", "Uploading #{pokemon} - #{counter}/#{number_of_pokemon}\n")
 
     pokemon_id = create_if_non_existant_return_id(POKEMON_URL, {name: pokemon})
     stat_record_id = create_return_id(STAT_RECORD_URL, remove_whitespace_from_hash_values({pokemon_id: pokemon_id, tier_rating_id: tier_rating_id, raw_usage: data["data"][pokemon]["Raw count"]}))
+    append(stat_record_file, "#{stat_record_id},")
 
     # Upload moves
     data["data"][pokemon]["Moves"].each do |move, value|
       move_id = create_if_non_existant_return_id(MOVE_URL, {name: move})
       move_record_id = create_return_id(MOVE_RECORD_URL, remove_whitespace_from_hash_values({number: value, stat_record_id: stat_record_id, move_id: move_id}))
+      append(move_record_file, "#{move_record_id},")
     end
 
     # Upload abilities
     data["data"][pokemon]["Abilities"].each do |ability, value|
       ability_id = create_if_non_existant_return_id(ABILITY_URL, {name: ability})
       ability_record_id = create_return_id(ABILITY_RECORD_URL, remove_whitespace_from_hash_values({number: value, stat_record_id: stat_record_id, ability_id: ability_id}))
+      append(ability_record_file, "#{ability_record_id},")
     end
 
     # Upload items
     data["data"][pokemon]["Items"].each do |item, value|
       item_id = create_if_non_existant_return_id(ITEM_URL, {name: item})
       item_record_id = create_return_id(ITEM_RECORD_URL, remove_whitespace_from_hash_values({number: value, stat_record_id: stat_record_id, item_id: item_id}))
+      append(item_record_file, "#{item_record_id},")
     end
 
     # Upload spreads
@@ -157,6 +174,7 @@ def upload_file(year, month, generation, tier, tier_rating, data)
       nature_id = create_if_non_existant_return_id(NATURE_URL, {name: nature})
 
       spread_record_id = create_return_id(SPREAD_RECORD_URL, remove_whitespace_from_hash_values({number: value, ev_spread_id: ev_spread_id, nature_id: nature_id, stat_record_id: stat_record_id}))
+      append(spread_record_file, "#{spread_record_id},")
     end
 
     # Upload checks and counters
@@ -168,6 +186,7 @@ def upload_file(year, month, generation, tier, tier_rating, data)
     data["data"][pokemon]["Teammates"].each do |teammate, value|
       teammate_pokemon_id = create_if_non_existant_return_id(POKEMON_URL, {name: teammate})
       teammate_record_id = create_return_id(TEAMMATE_RECORD_URL, remove_whitespace_from_hash_values({number: value, pokemon_id: teammate_pokemon_id, stat_record_id: stat_record_id}))
+      append(teammate_record_file, "#{teammate_record_id},")
     end
 
   end
@@ -202,13 +221,14 @@ total_files = chaos_files.size
 chaos_files.each do |filename|
   match = filename[0].scan(/(gen\d)?(.*)-(\d+)/)
 
-  generation = generation ? match[0][0].scan(/(\d)/)[0][0] : CURRENT_GENERATION
+  generation = match[0][0].scan(/(\d)/)[0][0]
+  generation = generation ? generation : CURRENT_GENERATION # This doesn't seem to work
   tier = match[0][1]
   rating = match[0][2]
 
   data = JSON.parse(get("#{smogon_url}/#{filename[0]}").body)
 
-  File.write("#{directory}/files.log", "Uploading #{filename[0]} - #{counter}/#{total_files}\n")
+  append("#{directory}/files.log", "Uploading #{filename[0]} - #{counter}/#{total_files}\n")
   upload_file(year, month, generation, tier, rating, data)
   counter += 1
 end
