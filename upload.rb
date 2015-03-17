@@ -130,6 +130,7 @@ def upload_file(year, month, generation, tier, tier_rating, data)
   ability_record_file = "#{logs_directory}/ability_records"
   item_record_file = "#{logs_directory}/item_records"
   spread_record_file = "#{logs_directory}/spread_records"
+  check_record_file = "#{logs_directory}/check_records"
   teammate_record_file = "#{logs_directory}/teammate_records"
 
   generation_id  = create_if_non_existant_return_id(GENERATION_URL, {number: generation})
@@ -185,10 +186,15 @@ def upload_file(year, month, generation, tier, tier_rating, data)
     end
 
     # Upload checks and counters
-    # data["data"][pokemon]["Checks and Counters"].each do |check, value|
-    #   check_pokemon_id = create_if_non_existant_return_id(POKEMON_URL, {name: check})
-    #   check_record_id = create_return_id(CHECK_RECORD_URL, remove_whitespace_from_hash_values({number: value, pokemon_id: check_pokemon_id, stat_record_id: stat_record_id}))
-    # end
+    data["data"][pokemon]["Checks and Counters"].each do |check, value|
+      matchup_occurences = value[0].to_i
+      kos_or_switches_caused = value[1]
+      kos_or_switches_stddev = value[2] 
+
+      check_pokemon_id = create_if_non_existant_return_id(POKEMON_URL, {name: check})
+      check_record_id = create_return_id(CHECK_RECORD_URL, remove_whitespace_from_hash_values({matchup_occurences: matchup_occurences, kos_or_switches_caused: kos_or_switches_caused, kos_or_switches_stddev: kos_or_switches_stddev, pokemon_id: check_pokemon_id, stat_record_id: stat_record_id}))
+      append(check_record_file, "#{check_record_id}")
+    end
 
     data["data"][pokemon]["Teammates"].each do |teammate, value|
       teammate_pokemon_id = create_if_non_existant_return_id(POKEMON_URL, {name: teammate})
@@ -226,10 +232,9 @@ counter = 1
 total_files = chaos_files.size
 
 chaos_files.each do |filename|
-  match = filename[0].scan(/(gen\d)?(.*)-(\d+)/)
+  match = filename[0].scan(/(?:gen(\d))?(.*)-(\d+).json/)
 
-  generation = match[0][0].scan(/(\d)/)[0][0]
-  generation = generation ? generation : CURRENT_GENERATION # This doesn't seem to work
+  generation = match[0][0] ? match[0][0] : CURRENT_GENERATION
   tier = match[0][1]
   rating = match[0][2]
 
@@ -239,6 +244,11 @@ chaos_files.each do |filename|
   unless year && month && generation && tier && rating
     puts "ERROR: Couldn't find data for this file!!"
     puts filename
+    puts "Year: #{year}"
+    puts "Month: #{month}"
+    puts "Generation: #{generation}"
+    puts "Tier: #{tier}"
+    puts "Rating: #{rating}"
     next
   end
   upload_file(year, month, generation, tier, rating, data)
