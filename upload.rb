@@ -12,6 +12,7 @@ CHECK_RECORD_URL    = API_URL + "/checkrecords"
 GENERATION_URL      = API_URL + "/generations"
 ITEM_URL            = API_URL + "/items"
 ITEM_RECORD_URL     = API_URL + "/itemrecords"
+LEAD_RECORD_URL     = API_URL + "/leadrecords"
 MONTH_URL           = API_URL + "/months"
 MOVE_URL            = API_URL + "/moves"
 MOVE_RECORD_URL     = API_URL + "/moverecords"
@@ -121,7 +122,7 @@ def append(filename, data)
   File.write(filename, data.to_s, buffer, mode: 'a')
 end
 
-def upload_file(year, month, generation, tier, tier_rating, data)
+def upload_file(year, month, generation, tier, tier_rating, data, leads)
   logs_directory = "logs/#{year}/#{month}/#{generation}/#{tier}/#{tier_rating}"
   FileUtils.mkdir_p(logs_directory)
 
@@ -132,6 +133,7 @@ def upload_file(year, month, generation, tier, tier_rating, data)
   spread_record_file = "#{logs_directory}/spread_records"
   check_record_file = "#{logs_directory}/check_records"
   teammate_record_file = "#{logs_directory}/teammate_records"
+  lead_record_file = "#{logs_directory}/lead_records"
 
   generation_id  = create_if_non_existant_return_id(GENERATION_URL, {number: generation})
   year_id        = create_if_non_existant_return_id(YEAR_URL, {number: year})
@@ -202,7 +204,26 @@ def upload_file(year, month, generation, tier, tier_rating, data)
       append(teammate_record_file, "#{teammate_record_id},")
     end
 
+    if leads.key?(pokemon)
+      lead_record_id = create_return_id(LEAD_RECORD_URL, remove_whitespace_from_hash_values({number: leads[pokemon], stat_record_id: stat_record_id}))
+      append(lead_record_file, "#{lead_record_id},")
+    end
+
   end
+end
+
+def parse_leads(url)
+  response = get(url)
+  return {} unless response.code == "200"
+
+  lead_stats = {}
+  lines = response.body.split("\n")
+  lines.each do |line|
+    match = line.scan(/\s*\|\s*\d+\s*\|\s*(\S+)\s*\|\s*(\S+)/)
+    next unless match[0]
+    lead_stats[match[0][0]] = match[0][1].chomp('%')
+  end
+  lead_stats
 end
 
 options = {}
@@ -221,12 +242,14 @@ end.parse!
 year = options[:year]
 month = options[:month]
 
-smogon_url = "http://www.smogon.com/stats/#{year}-#{month}/chaos/"
+smogon_base_url = "http://www.smogon.com/stats/#{year}-#{month}/"
+chaos_url = "#{smogon_base_url}chaos/"
+leads_url = "#{smogon_base_url}leads/"
 
 directory = "logs/#{year}/#{month}"
 FileUtils.mkdir_p(directory)
 
-chaos_files = get(smogon_url).body.scan(/<a.*>(.*.json)<\/a>/)
+chaos_files = get(chaos_url).body.scan(/<a.*>(.*.json)<\/a>/)
 
 counter = 1
 total_files = chaos_files.size
@@ -238,7 +261,9 @@ chaos_files.each do |filename|
   tier = match[0][1]
   rating = match[0][2]
 
-  data = JSON.parse(get("#{smogon_url}/#{filename[0]}").body)
+  data = JSON.parse(get("#{chaos_url}#{filename[0]}").body)
+  as_text_file = filename[0].sub("json", "txt")
+  leads = parse_leads("#{leads_url}#{as_text_file}")
 
   append("#{directory}/files.log", "Uploading #{filename[0]} - #{counter}/#{total_files}\n")
   unless year && month && generation && tier && rating
@@ -251,6 +276,6 @@ chaos_files.each do |filename|
     puts "Rating: #{rating}"
     next
   end
-  upload_file(year, month, generation, tier, rating, data)
+  upload_file(year, month, generation, tier, rating, data, leads)
   counter += 1
 end
