@@ -1,3 +1,4 @@
+require 'date'
 require 'fileutils'
 require 'json'
 require 'net/http'
@@ -239,43 +240,55 @@ OptionParser.new do |opts|
   end
 end.parse!
 
-year = options[:year]
-month = options[:month]
+current_date = Date.new(options[:year].to_i, options[:month].to_i, 01)
 
-smogon_base_url = "http://www.smogon.com/stats/#{year}-#{month}/"
-chaos_url = "#{smogon_base_url}chaos/"
-leads_url = "#{smogon_base_url}leads/"
+while(true) do
+  year = current_date.year
+  month = current_date.month
 
-directory = "logs/#{year}/#{month}"
-FileUtils.mkdir_p(directory)
+  smogon_base_url = "http://www.smogon.com/stats/#{year}-#{month}/"
+  chaos_url = "#{smogon_base_url}chaos/"
+  leads_url = "#{smogon_base_url}leads/"
 
-chaos_files = get(chaos_url).body.scan(/<a.*>(.*.json)<\/a>/)
-
-counter = 1
-total_files = chaos_files.size
-
-chaos_files.each do |filename|
-  match = filename[0].scan(/(?:gen(\d))?(.*)-(\d+).json/)
-
-  generation = match[0][0] ? match[0][0] : CURRENT_GENERATION
-  tier = match[0][1]
-  rating = match[0][2]
-
-  data = JSON.parse(get("#{chaos_url}#{filename[0]}").body)
-  as_text_file = filename[0].sub("json", "txt")
-  leads = parse_leads("#{leads_url}#{as_text_file}")
-
-  append("#{directory}/files.log", "Uploading #{filename[0]} - #{counter}/#{total_files}\n")
-  unless year && month && generation && tier && rating
-    puts "ERROR: Couldn't find data for this file!!"
-    puts filename
-    puts "Year: #{year}"
-    puts "Month: #{month}"
-    puts "Generation: #{generation}"
-    puts "Tier: #{tier}"
-    puts "Rating: #{rating}"
-    next
+  # Wait for the chaos directory for that year / month combo to become available
+  while(get(chaos_url).code != "200") do 
+    puts "Still haven't found chaos files for #{current_date}"
+    sleep(5 * 60)
   end
-  upload_file(year, month, generation, tier, rating, data, leads)
-  counter += 1
+
+  directory = "logs/#{year}/#{month}"
+  FileUtils.mkdir_p(directory)
+
+  chaos_files = get(chaos_url).body.scan(/<a.*>(.*.json)<\/a>/)
+
+  counter = 1
+  total_files = chaos_files.size
+
+  chaos_files.each do |filename|
+    match = filename[0].scan(/(?:gen(\d))?(.*)-(\d+).json/)
+
+    generation = match[0][0] ? match[0][0] : CURRENT_GENERATION
+    tier = match[0][1]
+    rating = match[0][2]
+
+    data = JSON.parse(get("#{chaos_url}#{filename[0]}").body)
+    as_text_file = filename[0].sub("json", "txt")
+    leads = parse_leads("#{leads_url}#{as_text_file}")
+
+    append("#{directory}/files.log", "Uploading #{filename[0]} - #{counter}/#{total_files}\n")
+    unless year && month && generation && tier && rating
+      puts "ERROR: Couldn't find data for this file!!"
+      puts filename
+      puts "Year: #{year}"
+      puts "Month: #{month}"
+      puts "Generation: #{generation}"
+      puts "Tier: #{tier}"
+      puts "Rating: #{rating}"
+      next
+    end
+    upload_file(year, month, generation, tier, rating, data, leads)
+    counter += 1
+  end
+
+  current_date = (current_date >> 1)
 end
