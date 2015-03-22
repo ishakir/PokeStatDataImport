@@ -61,10 +61,19 @@ end
 
 def get(url)
   uri = URI(url)
-  req = Net::HTTP::Get.new(uri)
-  res = Net::HTTP.new(uri.hostname, uri.port).start { |http|
-    http.request(req)
-  }
+  res = nil
+  while res == nil do
+    begin
+      req = Net::HTTP::Get.new(uri)
+      res = Net::HTTP.new(uri.hostname, uri.port).start { |http|
+        http.request(req)
+      }
+    rescue => e
+      puts "Error connecting to '#{uri}': #{e}"
+      puts "Sleeping 5 seconds and retrying"
+      sleep(5)
+    end
+  end
   sleep(1.0/1000.0)
   res
 end
@@ -125,6 +134,10 @@ end
 
 def upload_file(year, month, generation, tier, tier_rating, data, leads)
   logs_directory = "logs/#{year}/#{month}/#{generation}/#{tier}/#{tier_rating}"
+  if File.directory?(logs_directory)
+    puts "Identified that #{year}-#{month} gen#{generation}#{tier}-#{tier_rating} has already been uploaded"
+    return
+  end
   FileUtils.mkdir_p(logs_directory)
 
   stat_record_file = "#{logs_directory}/stat_records"
