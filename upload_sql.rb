@@ -1,7 +1,30 @@
 require "fileutils"
 require "mysql2"
 require "json"
+require "net/http"
+require "optparse"
 require "set"
+
+CURRENT_GENERATION = 6
+
+def get(url)
+  uri = URI(url)
+  res = nil
+  while res == nil do
+    begin
+      req = Net::HTTP::Get.new(uri)
+      res = Net::HTTP.new(uri.hostname, uri.port).start { |http|
+        http.request(req)
+      }
+    rescue => e
+      puts "Error connecting to '#{uri}': #{e}"
+      puts "Sleeping 5 seconds and retrying"
+      sleep(5)
+    end
+  end
+  sleep(1.0/1000.0)
+  res
+end
 
 def append(filename, data)
   buffer = File.exists?(filename) ? File.size(filename) : 0
@@ -33,7 +56,7 @@ def upload_tier_rating(year, month, generation, tier, tier_rating, number_of_bat
 	end
 
 	months = months(client)
-	if(!months.key?(month))
+	if(!months.key?({number: month, year_id: years[year]}))
 		execute_sql("INSERT INTO months (number, year_id) VALUES (#{month},#{years[year]})", client, "#{log_path}/month_insert.sql")
 		months = months(client)
 	end
@@ -173,7 +196,7 @@ def update_abilities(data, cache, client, log_path)
 	abilities(client)
 end
 
-def update_pokemon(data, cache, client, log_path)
+def update_pokemon(data, leads, cache, client, log_path)
 	new_pokemon = Set.new
 	data["data"].keys.each do |p|
 		new_pokemon.add(p) if !cache.key?(p)
@@ -181,6 +204,9 @@ def update_pokemon(data, cache, client, log_path)
 			new_pokemon.add(pokemon) if !cache.key?(pokemon)
 		end
 		data["data"][p]["Checks and Counters"].keys.each do |pokemon|
+			new_pokemon.add(pokemon) if !cache.key?(pokemon)
+		end
+		leads.keys.each do |pokemon|
 			new_pokemon.add(pokemon) if !cache.key?(pokemon)
 		end
 	end
@@ -237,12 +263,12 @@ def update_spreads(data, natures_cache, ev_spreads_cache, client, log_path)
 
 			nature = match[0][0]
 			ev_spread = {
-				hp: match[0][1],
-				attack: match[0][2],
-				defence: match[0][3],
-				spa: match[0][4],
-				spd: match[0][5],
-				speed: match[0][6]
+				hp: match[0][1].to_i,
+				attack: match[0][2].to_i,
+				defence: match[0][3].to_i,
+				spa: match[0][4].to_i,
+				spd: match[0][5].to_i,
+				speed: match[0][6].to_i
 			}
 
 			new_natures.add(nature) if !natures_cache.key?(nature)
@@ -263,22 +289,45 @@ def update_spreads(data, natures_cache, ev_spreads_cache, client, log_path)
 	[natures(client), ev_spreads(client)]
 end
 
+def parse_leads(url)
+  response = get(url)
+  return {} unless response.code == "200"
+
+  lead_stats = {}
+  lines = response.body.split("\n")
+  lines.each do |line|
+    match = line.scan(/\s*\|\s*\d+\s*\|\s*(\S+)\s*\|\s*(\S+)/)
+    next unless match[0]
+    lead_stats[match[0][0]] = match[0][1].chomp('%')
+  end
+  lead_stats
+end
+
 def upload_file(year, month, generation, tier, tier_rating, data, leads)
+	puts("#{Time.now.getutc}: Connecting")
 	client = Mysql2::Client.new(host: "pokestat.org.uk", username: "pokestat_dev", password: "pokestat_dev")
 	client.query("USE pokestat_dev;")
 
+	puts("#{Time.now.getutc}: Creating logs directory")
 	log_path = "logs/#{year}/#{month}/#{generation}/#{tier}/#{tier_rating}"
 	FileUtils.mkdir_p log_path
 
 	# Upload new stuff and update caches
+	puts("#{Time.now.getutc}: Updating Abilities")
 	abilities_cache = update_abilities(data, abilities(client), client, log_path)
+	puts("#{Time.now.getutc}: Updating Spreads")
 	natures_cache, ev_spreads_cache = update_spreads(data, natures(client), ev_spreads(client), client, log_path)
-	pokemon_cache = update_pokemon(data, pokemon(client), client, log_path)
+	puts("#{Time.now.getutc}: Updating Pokemon")
+	pokemon_cache = update_pokemon(data, leads, pokemon(client), client, log_path)
+	puts("#{Time.now.getutc}: Updating Moves")
 	moves_cache = update_moves(data, moves(client), client, log_path)
+	puts("#{Time.now.getutc}: Updating Items")
 	items_cache = update_items(data, items(client), client, log_path)
 
+	puts("#{Time.now.getutc}: Updating Tier")
 	tier_rating_id = upload_tier_rating(year, month, generation, tier, tier_rating, data["info"]["number of battles"], client, log_path)
-	puts tier_rating_id
+	puts("#{Time.now.getutc}: Done")
+	puts ""
 
 	# # TODO do the same for dates and months as we did with generations and tiers
 
@@ -331,71 +380,71 @@ def upload_file(year, month, generation, tier, tier_rating, data, leads)
 
 end
 
-data = JSON.parse(IO.read("1v1-0.json"))
-upload_file(2014, 11, 6, "1v1", 0, data, nil)
+# data = JSON.parse(IO.read("1v1-0.json"))
+# upload_file(2014, 11, 6, "1v1", 0, data, nil)
 
-# options = {}
-# OptionParser.new do |opts|
-#   opts.banner = "Usage: ruby upload.rb --year [year] --month [month]"
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: ruby upload.rb --year [year] --month [month]"
 
-#   opts.on("--year YEAR") do |year|
-#     options[:year] = year
-#   end
+  opts.on("--year YEAR") do |year|
+    options[:year] = year
+  end
 
-#   opts.on("--month MONTH") do |month|
-#     options[:month] = month
-#   end
-# end.parse!
+  opts.on("--month MONTH") do |month|
+    options[:month] = month
+  end
+end.parse!
 
-# current_date = Date.new(options[:year].to_i, options[:month].to_i, 01)
+current_date = Date.new(options[:year].to_i, options[:month].to_i, 01)
 
-# while(true) do
-#   year = current_date.year
-#   month = current_date.month
+while(true) do
+  year = current_date.year
+  month = current_date.month
 
-#   smogon_base_url = "http://www.smogon.com/stats/#{year}-#{month}/"
-#   chaos_url = "#{smogon_base_url}chaos/"
-#   leads_url = "#{smogon_base_url}leads/"
+  smogon_base_url = "http://www.smogon.com/stats/#{year}-#{month}/"
+  chaos_url = "#{smogon_base_url}chaos/"
+  leads_url = "#{smogon_base_url}leads/"
 
-#   # Wait for the chaos directory for that year / month combo to become available
-#   while(get(chaos_url).code != "200") do 
-#     puts "Still haven't found chaos files for #{current_date}"
-#     sleep(5 * 60)
-#   end
+  # Wait for the chaos directory for that year / month combo to become available
+  while(get(chaos_url).code != "200") do 
+    puts "Still haven't found chaos files for #{current_date}"
+    sleep(5 * 60)
+  end
 
-#   directory = "logs/#{year}/#{month}"
-#   FileUtils.mkdir_p(directory)
+  directory = "logs/#{year}/#{month}"
+  FileUtils.mkdir_p(directory)
 
-#   chaos_files = get(chaos_url).body.scan(/<a.*>(.*.json)<\/a>/)
+  chaos_files = get(chaos_url).body.scan(/<a.*>(.*.json)<\/a>/)
 
-#   counter = 1
-#   total_files = chaos_files.size
+  counter = 1
+  total_files = chaos_files.size
 
-#   chaos_files.each do |filename|
-#     match = filename[0].scan(/(?:gen(\d))?(.*)-(\d+).json/)
+  chaos_files.each do |filename|
+    match = filename[0].scan(/(?:gen(\d))?(.*)-(\d+).json/)
 
-#     generation = match[0][0] ? match[0][0] : CURRENT_GENERATION
-#     tier = match[0][1]
-#     rating = match[0][2]
+    generation = match[0][0] ? match[0][0].to_i : CURRENT_GENERATION
+    tier = match[0][1]
+    rating = match[0][2]
 
-#     data = JSON.parse(get("#{chaos_url}#{filename[0]}").body)
-#     as_text_file = filename[0].sub("json", "txt")
-#     leads = parse_leads("#{leads_url}#{as_text_file}")
+    data = JSON.parse(get("#{chaos_url}#{filename[0]}").body)
+    as_text_file = filename[0].sub("json", "txt")
+    leads = parse_leads("#{leads_url}#{as_text_file}")
 
-#     append("#{directory}/files.log", "Uploading #{filename[0]} - #{counter}/#{total_files}\n")
-#     unless year && month && generation && tier && rating
-#       puts "ERROR: Couldn't find data for this file!!"
-#       puts filename
-#       puts "Year: #{year}"
-#       puts "Month: #{month}"
-#       puts "Generation: #{generation}"
-#       puts "Tier: #{tier}"
-#       puts "Rating: #{rating}"
-#       next
-#     end
-#     upload_file(year, month, generation, tier, rating, data, leads)
-#     counter += 1
-#   end
+    append("#{directory}/files.log", "Uploading #{filename[0]} - #{counter}/#{total_files}\n")
+    unless year && month && generation && tier && rating
+      puts "ERROR: Couldn't find data for this file!!"
+      puts filename
+      puts "Year: #{year}"
+      puts "Month: #{month}"
+      puts "Generation: #{generation}"
+      puts "Tier: #{tier}"
+      puts "Rating: #{rating}"
+      next
+    end
+    upload_file(year, month, generation, tier, rating.to_i, data, leads)
+    counter += 1
+  end
 
-#   current_date = (current_date >> 1)
-# end
+  current_date = (current_date >> 1)
+end
