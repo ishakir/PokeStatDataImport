@@ -1,39 +1,63 @@
+require "fileutils"
 require "mysql2"
 require "json"
 require "set"
 
-def generations_and_tiers(client)
-	sql =   "SELECT g.number, t.name, t.id FROM tiers AS t\n" + 
-			"    JOIN generations AS g\n" + 
-			"        ON t.generation_id = g.id\n"
-
-	results = client.query(sql)
-	result = Hash.new{|h,k| h[k] = {}}
-	results.each do |row|
-		result[row["number"]] = Hash.new{|h,k| h[k] = {}}
-		result[row["number"]][row["name"]] = row["id"]
-	end
-	result
+def append(filename, data)
+  buffer = File.exists?(filename) ? File.size(filename) : 0
+  File.write(filename, data.to_s, buffer, mode: 'a')
 end
 
-def years_and_months(client)
-	sql =   "SELECT y.number AS year, m.number AS month, m.id FROM months AS m\n" + 
-			"	JOIN years as y\n" + 
-			"		ON m.year_id = y.id"
+def execute_sql(sql, client, log_file)
+	append(log_file, sql)
+	client.query(sql)
+end
 
-	results = client.query(sql)
-	result = Hash.new{|h,k| h[k] = {}}
-	results.each do |row|
-		result[row["year"]] = Hash.new{|h,k| h[k] = {}}
-		result[row["year"]][row["month"]] = row["id"]
+def upload_tier_rating(year, month, generation, tier, tier_rating, number_of_battles, client, log_path)
+	generations = generations(client)
+	if(!generations.key?(generation))
+		execute_sql("INSERT INTO generations (number) VALUES (#{generation})", client, "#{log_path}/generation_insert.sql")
+		generations = generations(client)
 	end
-	result
+
+	tiers = tiers(client)
+	if(!tiers.key?({name: tier, generation_id: generations[generation]}))
+		execute_sql("INSERT INTO tiers (name, generation_id) VALUES ('#{tier}',#{generations[generation]})", client, "#{log_path}/tier_insert.sql")
+		tiers = tiers(client)
+	end
+
+	years = years(client)
+	if(!years.key?(year))
+		execute_sql("INSERT INTO years (number) VALUES (#{year})", client, "#{log_path}/year_insert.sql")
+		years = years(client)
+	end
+
+	months = months(client)
+	if(!months.key?(month))
+		execute_sql("INSERT INTO months (number, year_id) VALUES (#{month},#{years[year]})", client, "#{log_path}/month_insert.sql")
+		months = months(client)
+	end
+
+	tier_months = tier_months(client)
+	tier_id = tiers[{name: tier, generation_id: generations[generation]}]
+	month_id = months[{number: month, year_id: years[year]}]
+	if(!tier_months.key?({tier_id: tier_id, month_id: month_id}))
+		execute_sql("INSERT INTO tier_months (tier_id, month_id) VALUES (#{tier_id},#{month_id})", client, "#{log_path}/tier_month_insert.sql")
+		tier_months = tier_months(client)
+	end
+
+	tier_ratings = tier_ratings(client)
+	tier_month_id = tier_months[{tier_id: tier_id, month_id: month_id}]
+	if(!tier_ratings.key?({tier_month_id: tier_month_id, rating: tier_rating}))
+		execute_sql("INSERT INTO tier_ratings (tier_month_id, rating, no_of_battles) VALUES (#{tier_month_id}, #{tier_rating}, #{number_of_battles})", client, "#{log_path}/tier_rating_insert.sql")
+		tier_months = tier_months(client)
+	end
+
+	tier_months[{tier_month_id: tier_month_id, rating: tier_rating}]
 end
 
 def ev_spreads(client)
-	sql =   "SELECT id, hp, attack, defence, spa, spd, speed FROM ev_spreads"
-
-	results = client.query(sql)
+	results = client.query("SELECT id, hp, attack, defence, spa, spd, speed FROM ev_spreads")
 	result = Hash.new{|h,k| h[k] = {}}
 	results.each do |row|
 		result[{
@@ -77,7 +101,63 @@ def items(client)
 	reverse_id_hash(client, "SELECT name, id FROM items", "id", "name")
 end
 
-def update_abilities(data, cache, client)
+def generations(client)
+	reverse_id_hash(client, "SELECT number, id FROM generations", "id", "number")
+end
+
+def years(client)
+	reverse_id_hash(client, "SELECT number, id FROM years", "id", "number")
+end
+
+def months(client)
+	results = client.query("SELECT id, number, year_id FROM months")
+	result = {}
+	results.each do |row|
+		result[{
+			number: row["number"],
+			year_id: row["year_id"]
+		}] = row["id"]
+	end
+	result
+end
+
+def tiers(client)
+	results = client.query("SELECT id, name, generation_id FROM tiers")
+	result = {}
+	results.each do |row|
+		result[{
+			name: row["name"],
+			generation_id: row["generation_id"]
+		}] = row["id"]
+	end
+	result
+end
+
+def tier_months(client)
+	results = client.query("SELECT id, tier_id, month_id FROM tier_months")
+	result = {}
+	results.each do |row|
+		result[{
+			tier_id: row["tier_id"],
+			month_id: row["month_id"]
+		}] = row["id"]
+	end
+	result
+end
+
+def tier_ratings(client)
+	results = client.query("SELECT id, rating, tier_month_id FROM tier_ratings")
+	result = {}
+	results.each do |row|
+		result[{
+			rating: row["rating"],
+			tier_month_id: row["tier_month_id"]
+		}] = row["id"]
+	end
+	result
+end
+
+def update_abilities(data, cache, client, log_path)
 	new_abilities = Set.new
 	data["data"].keys.each do |pokemon|
 		data["data"][pokemon]["Abilities"].keys.each do |ability|
@@ -89,11 +169,11 @@ def update_abilities(data, cache, client)
 		"('" + ability.gsub("'", "''") + "')"
 	end
 
-	client.query("INSERT INTO abilities (name) VALUES " + new_abilities_sql.join(",")) if !new_abilities_sql.empty?
+	execute_sql("INSERT INTO abilities (name) VALUES " + new_abilities_sql.join(","), client, "#{log_path}/ability_inserts.sql") unless new_abilities_sql.empty?
 	abilities(client)
 end
 
-def update_pokemon(data, cache, client)
+def update_pokemon(data, cache, client, log_path)
 	new_pokemon = Set.new
 	data["data"].keys.each do |p|
 		new_pokemon.add(p) if !cache.key?(p)
@@ -109,11 +189,11 @@ def update_pokemon(data, cache, client)
 		"('" + name.gsub("'", "''") + "')"
 	end
 
-	client.query("INSERT INTO pokemon (name) VALUES " + new_pokemon_sql.join(",")) if !new_pokemon_sql.empty?
+	execute_sql("INSERT INTO pokemon (name) VALUES " + new_pokemon_sql.join(","), client, "#{log_path}/pokemon_inserts.sql") unless new_pokemon_sql.empty?
 	pokemon(client)
 end
 
-def update_moves(data, cache, client)
+def update_moves(data, cache, client, log_path)
 	new_moves = Set.new
 	data["data"].keys.each do |pokemon|
 		data["data"][pokemon]["Moves"].keys.each do |move|
@@ -125,11 +205,11 @@ def update_moves(data, cache, client)
 		"('" + move.gsub("'", "''") + "')"
 	end
 
-	client.query("INSERT INTO moves (name) VALUES " + new_moves_sql.join(",")) if !new_moves_sql.empty?
+	execute_sql("INSERT INTO moves (name) VALUES " + new_moves_sql.join(","), client, "#{log_path}/move_inserts.sql") unless new_moves_sql.empty?
 	moves(client)
 end
 
-def update_items(data, cache, client)
+def update_items(data, cache, client, log_path)
 	new_items = Set.new
 	data["data"].keys.each do |pokemon|
 		data["data"][pokemon]["Items"].keys.each do |item|
@@ -141,11 +221,11 @@ def update_items(data, cache, client)
 		"('" + item.gsub("'", "''") + "')"
 	end
 
-	client.query("INSERT INTO items (name) VALUES " + new_items_sql.join(",")) if !new_items_sql.empty?
+	execute_sql("INSERT INTO items (name) VALUES " + new_items_sql.join(","), client, "#{log_path}/item_inserts.sql") unless new_items_sql.empty?
 	items(client)
 end
 
-def update_spreads(data, natures_cache, ev_spreads_cache, client)
+def update_spreads(data, natures_cache, ev_spreads_cache, client, log_path)
 	regex = /([A-z]+):(\d+)\/(\d+)\/(\d+)\/(\d+)\/(\d+)\/(\d+)/
 
 	new_natures = Set.new
@@ -178,37 +258,27 @@ def update_spreads(data, natures_cache, ev_spreads_cache, client)
 		"(" + [e[:hp], e[:attack], e[:defence], e[:spa], e[:spd], e[:speed]].join(",") + ")"
 	end
 
-	puts "INSERT INTO natures (name) VALUES " + new_natures_sql.join(",")
-	puts "INSERT INTO ev_spreads (hp, attack, defence, spa, spd, speed) VALUES " + new_ev_spreads_sql.join(",")
+	execute_sql("INSERT INTO natures (name) VALUES " + new_natures_sql.join(","), client, "#{log_path}/nature_inserts.sql") unless new_natures_sql.empty?
+	execute_sql("INSERT INTO ev_spreads (hp, attack, defence, spa, spd, speed) VALUES " + new_ev_spreads_sql.join(","), client, "#{log_path}/ev_spread_inserts.sql") unless new_ev_spreads_sql.empty?
 	[natures(client), ev_spreads(client)]
 end
 
-def add_generation_and_tier(cache, generation, tier)
-	sql = ""
-	sql += "INSERT INTO generations VALUES (%{generation});" % { generation: generation }
-	sql += "INSERT INTO tiers VALUES (%{tier});" % { tier: tier }
-	execute(sql)
-end
+def upload_file(year, month, generation, tier, tier_rating, data, leads)
+	client = Mysql2::Client.new(host: "pokestat.org.uk", username: "pokestat_dev", password: "pokestat_dev")
+	client.query("USE pokestat_dev;")
 
-def upload_file(year, month, generation, tier, tier_rating, data, leads, client)	
-	# Create new mysql connection
-
-	generations_and_tiers = generations_and_tiers(client)   # Generation -> Tier -> tier_id
-	months = years_and_months(client)						# Year -> Month -> month_id
+	log_path = "logs/#{year}/#{month}/#{generation}/#{tier}/#{tier_rating}"
+	FileUtils.mkdir_p log_path
 
 	# Upload new stuff and update caches
-	abilities_cache = update_abilities(data, abilities(client), client)
-	natures_cache, ev_spreads_cache = update_spreads(data, natures(client), ev_spreads(client), client)
-	pokemon_cache = update_pokemon(data, pokemon(client), client)
-	moves_cache = update_moves(data, moves(client), client)
-	items_cache = update_items(data, items(client), client)
+	abilities_cache = update_abilities(data, abilities(client), client, log_path)
+	natures_cache, ev_spreads_cache = update_spreads(data, natures(client), ev_spreads(client), client, log_path)
+	pokemon_cache = update_pokemon(data, pokemon(client), client, log_path)
+	moves_cache = update_moves(data, moves(client), client, log_path)
+	items_cache = update_items(data, items(client), client, log_path)
 
-	# Grab some important information
-	# if !generations_and_tiers.key?(generation)
-	# 	generations_and_tiers = add_generation_and_tier(generations_and_tiers, generation, tier)
-	# elsif !generations_and_tiers[generation].key?(tier)
-	# 	generations_and_tiers = add_tier(generations_and_tiers, generation, tier)
-	# end
+	tier_rating_id = upload_tier_rating(year, month, generation, tier, tier_rating, data["info"]["number of battles"], client, log_path)
+	puts tier_rating_id
 
 	# # TODO do the same for dates and months as we did with generations and tiers
 
@@ -261,10 +331,8 @@ def upload_file(year, month, generation, tier, tier_rating, data, leads, client)
 
 end
 
-client = Mysql2::Client.new(host: "pokestat.org.uk", username: "pokestat_dev", password: "pokestat_dev")
-client.query("USE pokestat_dev;")
 data = JSON.parse(IO.read("1v1-0.json"))
-upload_file(2014, 11, 6, "1v1", 0, data, nil, client)
+upload_file(2014, 11, 6, "1v1", 0, data, nil)
 
 # options = {}
 # OptionParser.new do |opts|
