@@ -259,7 +259,7 @@ while(true) do
   year = current_date.year
   month = current_date.month
 
-  smogon_base_url = "http://www.smogon.com/stats/#{year}-#{month}/"
+  smogon_base_url = "http://www.smogon.com/stats/#{current_date.strftime("%Y-%m")}/"
   chaos_url = "#{smogon_base_url}chaos/"
   leads_url = "#{smogon_base_url}leads/"
 
