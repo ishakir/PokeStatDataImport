@@ -32,7 +32,7 @@ def append(filename, data)
 end
 
 def execute_sql(sql, client, log_file)
-	append(log_file, sql)
+	append(log_file, sql + "\n")
 	client.query(sql)
 end
 
@@ -73,10 +73,10 @@ def upload_tier_rating(year, month, generation, tier, tier_rating, number_of_bat
 	tier_month_id = tier_months[{tier_id: tier_id, month_id: month_id}]
 	if(!tier_ratings.key?({tier_month_id: tier_month_id, rating: tier_rating}))
 		execute_sql("INSERT INTO tier_ratings (tier_month_id, rating, no_of_battles) VALUES (#{tier_month_id}, #{tier_rating}, #{number_of_battles})", client, "#{log_path}/tier_rating_insert.sql")
-		tier_months = tier_months(client)
+		tier_ratings = tier_ratings(client)
 	end
 
-	tier_months[{tier_month_id: tier_month_id, rating: tier_rating}]
+	tier_ratings[{tier_month_id: tier_month_id, rating: tier_rating}]
 end
 
 def ev_spreads(client)
@@ -251,26 +251,30 @@ def update_items(data, cache, client, log_path)
 	items(client)
 end
 
-def update_spreads(data, natures_cache, ev_spreads_cache, client, log_path)
+def parse_spread(spread)
 	regex = /([A-z]+):(\d+)\/(\d+)\/(\d+)\/(\d+)\/(\d+)\/(\d+)/
+	match = spread.scan(regex)
 
+	nature = match[0][0]
+	ev_spread = {
+		hp: match[0][1].to_i,
+		attack: match[0][2].to_i,
+		defence: match[0][3].to_i,
+		spa: match[0][4].to_i,
+		spd: match[0][5].to_i,
+		speed: match[0][6].to_i
+	}
+
+	[nature, ev_spread]
+end
+
+def update_spreads(data, natures_cache, ev_spreads_cache, client, log_path)
 	new_natures = Set.new
 	new_ev_spreads = Set.new
 
 	data["data"].keys.each do |pokemon|
 		data["data"][pokemon]["Spreads"].keys.each do |spread|
-			match = spread.scan(regex)
-
-			nature = match[0][0]
-			ev_spread = {
-				hp: match[0][1].to_i,
-				attack: match[0][2].to_i,
-				defence: match[0][3].to_i,
-				spa: match[0][4].to_i,
-				spd: match[0][5].to_i,
-				speed: match[0][6].to_i
-			}
-
+			nature, ev_spread = parse_spread(spread)
 			new_natures.add(nature) if !natures_cache.key?(nature)
 			new_ev_spreads.add(ev_spread) if !ev_spreads_cache.key?(ev_spread)
 		end
@@ -286,7 +290,7 @@ def update_spreads(data, natures_cache, ev_spreads_cache, client, log_path)
 
 	execute_sql("INSERT INTO natures (name) VALUES " + new_natures_sql.join(","), client, "#{log_path}/nature_inserts.sql") unless new_natures_sql.empty?
 	execute_sql("INSERT INTO ev_spreads (hp, attack, defence, spa, spd, speed) VALUES " + new_ev_spreads_sql.join(","), client, "#{log_path}/ev_spread_inserts.sql") unless new_ev_spreads_sql.empty?
-	[natures(client), ev_spreads(client)]
+	[natures(client), new_ev_spreads_sql.empty? ? ev_spreads_cache : ev_spreads(client)]
 end
 
 def parse_leads(url)
@@ -304,84 +308,76 @@ def parse_leads(url)
 end
 
 def upload_file(year, month, generation, tier, tier_rating, data, leads)
-	puts("#{Time.now.getutc}: Connecting")
 	client = Mysql2::Client.new(host: "pokestat.org.uk", username: "pokestat_dev", password: "pokestat_dev")
 	client.query("USE pokestat_dev;")
 
-	puts("#{Time.now.getutc}: Creating logs directory")
 	log_path = "logs/#{year}/#{month}/#{generation}/#{tier}/#{tier_rating}"
 	FileUtils.mkdir_p log_path
 
 	# Upload new stuff and update caches
-	puts("#{Time.now.getutc}: Updating Abilities")
 	abilities_cache = update_abilities(data, abilities(client), client, log_path)
-	puts("#{Time.now.getutc}: Updating Spreads")
 	natures_cache, ev_spreads_cache = update_spreads(data, natures(client), ev_spreads(client), client, log_path)
-	puts("#{Time.now.getutc}: Updating Pokemon")
 	pokemon_cache = update_pokemon(data, leads, pokemon(client), client, log_path)
-	puts("#{Time.now.getutc}: Updating Moves")
 	moves_cache = update_moves(data, moves(client), client, log_path)
-	puts("#{Time.now.getutc}: Updating Items")
 	items_cache = update_items(data, items(client), client, log_path)
 
-	puts("#{Time.now.getutc}: Updating Tier")
 	tier_rating_id = upload_tier_rating(year, month, generation, tier, tier_rating, data["info"]["number of battles"], client, log_path)
-	puts("#{Time.now.getutc}: Done")
-	puts ""
 
-	# # TODO do the same for dates and months as we did with generations and tiers
+	## This will be a list of [list of sql statements]
+	data["data"].keys.each do |pokemon|
+		pokemon_data = data["data"][pokemon]
+		log_file = "#{log_path}/#{pokemon}.sql"
+		
+		execute_sql("INSERT INTO stat_records (raw_usage, pokemon_id, tier_rating_id) VALUES (#{pokemon_data["Raw count"]}, #{pokemon_cache[pokemon]}, #{tier_rating_id});", client, log_file)
+		results = client.query("SELECT id FROM stat_records WHERE pokemon_id = #{pokemon_cache[pokemon]} AND tier_rating_id = #{tier_rating_id}")
+		stat_record_id = nil
+		results.each do |row|
+			stat_record_id = row["id"]
+		end
 
-	# ## This will be a list of [list of sql statements]
-	# pokemon_sql = data["data"].keys.map do |pokemon|
-	# 	pokemon_data = data["data"][pokemon]
+		sql = []
+		if leads.key?(pokemon)
+			sql.push("INSERT INTO lead_records (number, stat_record_id) VALUES (#{leads[pokemon]}, #{stat_record_id});")
+		end
 
-	# 	sql = []
-	# 	sql.append("INSERT INTO stat_records VALUES (#{pokemon_data["Raw count"]}, #{pokemon_id} #{tier_rating_id});")
-	# 	sql.append("@stat_record_id = SELECT id FROM stat_records WHERE pokemon_id = 'pokemon_id' AND tier_rating_id = #{tier_rating_id}")
+		data["data"][pokemon]["Abilities"].each do |key, value|
+			sql.push("INSERT INTO ability_records (number, ability_id, stat_record_id) VALUES (#{value}, #{abilities_cache[key]}, #{stat_record_id});")
+		end
 
-	# 	ability_data = get_ability_data(pokemon_data)
-	# 	item_data = get_items_data(pokemon_data)
-	# 	move_data = get_move_data(pokemon_data)
-	# 	spread_data = get_ev_spreads_data(pokemon_data)
-	# 	checks_data = get_checks_data(pokemon_data)
-	# 	teammates_data = get_teammates_data(pokemon_data)
+		data["data"][pokemon]["Items"].each do |key, value|
+			sql.push("INSERT INTO item_records (number, item_id, stat_record_id) VALUES (#{value}, #{items_cache[key]}, #{stat_record_id});")
+		end
 
-	# 	# if leads.key?(pokemon)
-	# 	# 	sql.append("INSERT INTO lead_records VALUES (%{number}, @stat_record_id);" % { number: leads[pokemon] })
-	# 	# end
+		data["data"][pokemon]["Moves"].each do |key, value|
+			sql.push("INSERT INTO move_records (number, move_id, stat_record_id) VALUES (#{value}, #{moves_cache[key]}, #{stat_record_id});")
+		end
 
-	# 	ability_data.each do |ability_record|
-	# 		sql.append("IMSERT INTO ability_records VALUES (%{number}, %{ability_id}, @stat_record_id);" % { number: ability_record["number"], ability_id: abilities_cache[ability_record["name"]]})
-	# 	end
+		data["data"][pokemon]["Spreads"].each do |key, value|
+			nature, ev_spread = parse_spread(key)
+			sql.push("INSERT INTO spread_records (number, ev_spread_id, nature_id, stat_record_id) VALUES (#{value}, #{ev_spreads_cache[ev_spread]}, #{natures_cache[nature]}, #{stat_record_id});")
+		end
 
-	# 	item_data.each do |item_record|
-	# 		sql.append("INSERT INTO item_records VALUES (%{number}, %{item_id}, @stat_record_id);"  % { number: item_record["number"], item_id: items_cache[item_record["name"]]})
-	# 	end
+		data["data"][pokemon]["Checks and Counters"].each do |key, value|
+			matchup_occurences, kos_or_switches_caused, kos_or_switches_stddev = value
+			sql.push("INSERT INTO check_records (matchup_occurences, kos_or_switches_caused, kos_or_switches_stddev, pokemon_id, stat_record_id) VALUES (#{matchup_occurences}, #{kos_or_switches_caused}, #{kos_or_switches_stddev}, #{pokemon_cache[key]}, #{stat_record_id});")
+		end
 
-	# 	move_data.each do |move_record|
-	# 		sql.append("INSERT INTO move_records VALUES (%{number}, %{move_id}, @stat_record_id);" % { number: move_record["number"], move_id: moves_cache[move_record["name"]] })
-	# 	end
+		data["data"][pokemon]["Teammates"].each do |key, value|
+			sql.push("INSERT INTO teammate_records (number, pokemon_id, stat_record_id) VALUES (#{value}, #{pokemon_cache[key]}, #{stat_record_id});")
+		end
 
-	# 	spread_data.each do |spread_record|
-	# 		sql.append("INSERT INTO spread_records VALUES (%{number}, %{ev_spread_id}, %{nature_id}, @stat_record_id);" % { number: spread_record["number"], ev_spread_id: ev_spreads_cache[spread_record["ev_spread"]], nature_id: natures_cache[spread_record["nature"]]})
-	# 	end
+		sql.each do |sql_statement|
+			execute_sql(sql_statement, client, log_file)
+		end
+	end
 
-	# 	checks_data.each do |check_record|
-	# 		sql.append("INSERT INTO check_records VALUES (%{matchup_occurences}, %{kos_or_switches_caused}, %{kos_or_switches_stddev}, %{pokemon_id}, @stat_record_id);" % { matchup_occurences: check_record["matchup_occurences"], kos_or_switches_caused: check_record["kos_or_switches_caused"], kos_or_switches_stddev: check_record["kos_or_switches_stddev"], pokemon_id: pokemon_cache[check_record["pokemon"]]})
-	# 	end
-
-	# 	teammates_data.each do |teammate_record|
-	# 		sql.append("INSERT INTO teammate_records VALUES (%{number}, %{pokemon_id}, @stat_record_id);" % { number: teammate_record["number"], pokemon_id: pokemon_cache[teammate_record["pokemon"]]})
-	# 	end
-
-	# 	execute(sql)
-
-	# end
-
+	client.close()
 end
 
 # data = JSON.parse(IO.read("1v1-0.json"))
-# upload_file(2014, 11, 6, "1v1", 0, data, nil)
+# leads = {}
+# leads["Fletchinder"] = 4.13795
+# upload_file(2014, 11, 6, "1v1", 0, data, leads)
 
 options = {}
 OptionParser.new do |opts|
@@ -431,7 +427,7 @@ while(true) do
     as_text_file = filename[0].sub("json", "txt")
     leads = parse_leads("#{leads_url}#{as_text_file}")
 
-    append("#{directory}/files.log", "Uploading #{filename[0]} - #{counter}/#{total_files}\n")
+    append("#{directory}/files.log", "#{Time.now.getutc}: Uploading #{filename[0]} - #{counter}/#{total_files}\n")
     unless year && month && generation && tier && rating
       puts "ERROR: Couldn't find data for this file!!"
       puts filename
