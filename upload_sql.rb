@@ -273,10 +273,10 @@ def update_spreads(data, natures_cache, ev_spreads_cache, client, log_path)
 	new_ev_spreads = Set.new
 
 	data["data"].keys.each do |pokemon|
-		data["data"][pokemon]["Spreads"].keys.each do |spread|
+		data["data"][pokemon]["Spreads"].keys do |spread, v|
 			nature, ev_spread = parse_spread(spread)
 			new_natures.add(nature) if !natures_cache.key?(nature)
-			new_ev_spreads.add(ev_spread) if !ev_spreads_cache.key?(ev_spread)
+			new_ev_spreads.add(ev_spread) if v.to_i > 10 && !ev_spreads_cache.key?(ev_spread)
 		end
 	end
 
@@ -354,7 +354,7 @@ def upload_file(year, month, generation, tier, tier_rating, data, leads)
 
 		data["data"][pokemon]["Spreads"].each do |key, value|
 			nature, ev_spread = parse_spread(key)
-			sql.push("INSERT INTO spread_records (number, ev_spread_id, nature_id, stat_record_id) VALUES (#{value}, #{ev_spreads_cache[ev_spread]}, #{natures_cache[nature]}, #{stat_record_id});")
+			sql.push("INSERT INTO spread_records (number, ev_spread_id, nature_id, stat_record_id) VALUES (#{value}, #{ev_spreads_cache[ev_spread]}, #{natures_cache[nature]}, #{stat_record_id});") if value.to_i > 10
 		end
 
 		data["data"][pokemon]["Checks and Counters"].each do |key, value|
