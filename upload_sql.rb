@@ -33,7 +33,11 @@ end
 
 def execute_sql(sql, client, log_file)
 	append(log_file, sql + "\n")
-	client.query(sql)
+	begin
+		client.query(sql)
+	rescue
+		puts sql
+	end
 end
 
 def upload_tier_rating(year, month, generation, tier, tier_rating, number_of_battles, client, log_path)
@@ -269,11 +273,12 @@ def parse_spread(spread)
 end
 
 def update_spreads(data, natures_cache, ev_spreads_cache, client, log_path)
+	puts "Hello"
 	new_natures = Set.new
 	new_ev_spreads = Set.new
 
 	data["data"].keys.each do |pokemon|
-		data["data"][pokemon]["Spreads"].keys do |spread, v|
+		data["data"][pokemon]["Spreads"].each do |spread, v|
 			nature, ev_spread = parse_spread(spread)
 			new_natures.add(nature) if !natures_cache.key?(nature)
 			new_ev_spreads.add(ev_spread) if v.to_i > 10 && !ev_spreads_cache.key?(ev_spread)
