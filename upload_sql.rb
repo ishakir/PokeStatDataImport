@@ -328,8 +328,12 @@ def upload_file(year, month, generation, tier, tier_rating, data, leads)
 
 	tier_rating_id = upload_tier_rating(year, month, generation, tier, tier_rating, data["info"]["number of battles"], client, log_path)
 
-	## This will be a list of [list of sql statements]
+	counter = 1
+	total_pokemon = data["data"].keys.size
+
 	data["data"].keys.each do |pokemon|
+		append("#{log_path}/pokemon.log", "#{Time.now.getutc}: Uploading #{pokemon} - #{counter}/#{total_pokemon}\n")
+
 		pokemon_data = data["data"][pokemon]
 		log_file = "#{log_path}/#{pokemon}.sql"
 		
@@ -374,6 +378,8 @@ def upload_file(year, month, generation, tier, tier_rating, data, leads)
 		sql.each do |sql_statement|
 			execute_sql(sql_statement, client, log_file)
 		end
+
+		counter += 1
 	end
 
 	client.close()
